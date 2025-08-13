@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Command Line</title>
+  <style>
+    :root{
+      --bg:#0c0f14;            /* page background */
+      --term:#0b0e14;          /* terminal background */
+      --title:#0f131a;         /* title/menu bar */
+      --text:#d7dbe2;          /* main text */
+      --muted:#8a93a6;         /* secondary text */
+      --blue:#28a0f0;          /* Kali blue */
+      --green:#33d17a;         /* Kali green */
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;background:var(--bg);color:var(--text);
+      font:15px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
+      min-height:100vh; display:grid; place-items:center; padding:24px;
+    }
+    .wrap{width:min(92vw,1100px)}
+    .window{border:none;border-radius:10px;overflow:hidden;background:var(--term);box-shadow:0 12px 30px rgba(0,0,0,.45)}
+    .menubar{display:flex;align-items:center;gap:18px;background:var(--title);color:#cfd8ff;padding:8px 12px;border-bottom:1px solid #1a2433}
+    .menubar .menu{display:flex;gap:18px;font-size:13px;opacity:.9}
+    .menubar .title{margin-left:auto;font-size:13px;opacity:.9}
+    .menubar .dots{display:flex;gap:8px;margin-left:8px}
+    .dot{width:10px;height:10px;border-radius:50%}
+    .dot.r{background:#ff5f56}.dot.y{background:#ffbd2e}.dot.g{background:#27c93f}
+
+    .terminal{height:60vh;min-height:420px;padding:14px 14px 10px;overflow:auto;background:var(--term)}
+    .line{white-space:pre-wrap;word-break:break-word; line-height:1.6}
+    .muted{color:var(--muted)}
+
+    /* Prompt colors + spacing between command blocks */
+    .ps1a{color:var(--muted); margin-top:16px}
+    .ps1a .user{color:var(--green)}
+    .ps1a .host{color:var(--blue)}
+    .ps1a .cwd{color:#9bb4ff}
+    .ps1b{display:flex;align-items:baseline; margin-bottom:0}
+    .ps1b .arrow{margin-right:6px}
+
+    [contenteditable]{outline:none}
+    .input{min-width:2ch;display:inline-block}
+    .input::selection{background:#234a77;color:#fff}
+
+    .foot{display:flex;gap:10px;color:#7f8798;font-size:12px;margin-top:8px;justify-content:center}
+    .badge{border:1px solid #1a2433;border-radius:999px;padding:2px 8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="window">
+      <div class="menubar">
+        <div class="menu"><span>File</span><span>Edit</span><span>View</span><span>Terminal</span><span>Tabs</span><span>Help</span></div>
+        <div class="title" id="title">Terminal — </div>
+        <div class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+      </div>
+      <div id="term" class="terminal" role="region" aria-label="Kali terminal"></div>
+    </div>
+    <div class="foot">
+      <span class="badge">Shift↑/Shift↓ history</span>
+      <span class="badge">Ctrl+L clear</span>
+      <span class="badge">Tab autocomplete</span>
+      <span>Type 'help' to list commands</span>
+    </div>
+  </div>
+
+  <script>
+  (()=> {
+    const term = document.getElementById('term');
+    const titleEl = document.getElementById('title');
+
+    const url = new URL(location.href);
+    const user = url.searchParams.get('user') || 'kali';
+    const host = url.searchParams.get('host') || 'kali';
+
+    const state = {
+      user, host,
+      cwd: `/home/${user}`,
+      history: [], histIdx: 0,
+      fs: null, net: null,
+      inputEl: null,
+      env: {HOME: `/home/${user}`, USER: user, HOSTNAME: host, PWD: `/home/${user}`, PATH: '/bin:/usr/bin', SHELL: '/bin/bash'}
+    };
+
+    const now = ()=>new Date();
+    const fmtTime = d=>d.toISOString().replace('T',' ').split('.')[0];
+    const bootStarted = Date.now();
+
+    // ---------- FS ----------
+    const saveFS = ()=>localStorage.setItem('kali_fs_v1', JSON.stringify(state.fs));
+    const loadFS = ()=>{ try{const r=localStorage.getItem('kali_fs_v1'); return r?JSON.parse(r):null;}catch(_){return null;} };
+    const file = (content)=>({type:'file', name:'', perms:'rw-r--r--', owner:state.user, group:state.user, mtime:Date.now(), size:content.length, content});
+    const defaultFS = ()=>({type:'dir', name:'/', perms:'rwxr-xr-x', owner:'root', group:'root', mtime:Date.now(), children:{
+      home:{type:'dir', name:'home', perms:'rwxr-xr-x', owner:'root', group:'root', mtime:Date.now(), children:{
+        [state.user]:{type:'dir', name:state.user, perms:'rwxr-xr-x', owner:state.user, group:state.user, mtime:Date.now(), children:{
+          'README.txt':file(`Welcome to the in-browser Kali-style terminal!
+
+This is a simulated environment. Files persist in your browser.
+
+Useful commands:
+  help                      List commands & usage
+  ls, cd, pwd               Navigate the virtual FS
+  cat, echo, touch          Read/write files (supports > and >>)
+  mkdir, rm, mv, cp         Manage files and folders
+  grep, find                Search content / names
+  whoami, uname -a          System info
+  date, cal                 Time utilities
+  ifconfig, ip a            Network info (simulated)
+  ping, nmap                Network tools (simulated)
+  ps, top                   Processes (simulated)
+  history, clear            Shell helpers`),
+        }}
+      }},
+      etc:{type:'dir', name:'etc', perms:'rwxr-xr-x', owner:'root', group:'root', mtime:Date.now(), children:{
+        'motd': file("Browser sandbox — does not run on your PC. Data stays in your browser. Type 'help' to list commands.\n"),
+        'hosts':file("127.0.0.1 localhost\n192.168.1.1 router\n"),
+        'issue':file('Kali GNU/Linux — 64-bit'),
+      }},
+      var:{type:'dir', name:'var', perms:'rwxr-xr-x', owner:'root', group:'root', mtime:Date.now(), children:{
+        log:{type:'dir', name:'log', perms:'rwxr-xr-x', owner:'root', group:'root', mtime:Date.now(), children:{
+          syslog:file(`[${fmtTime(now())}] boot: demo kernel 6.9.0 started\n`)
+        }}
+      }},
+      tmp:{type:'dir', name:'tmp', perms:'rwxrwxrwt', owner:'root', group:'root', mtime:Date.now(), children:{}},
+      usr:{type:'dir', name:'usr', perms:'rwxr-xr-x', owner:'root', group:'root', mtime:Date.now(), children:{share:{type:'dir', name:'share', perms:'rwxr-xr-x', owner:'root', group:'root', mtime:Date.now(), children:{}}}},
+      bin:{type:'dir', name:'bin', perms:'rwxr-xr-x', owner:'root', group:'root', mtime:Date.now(), children:{}}
+    }});
+
+    const escapeHTML = s=>s.replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+    const displayPath = p => p.startsWith('/home/'+state.user) ? p.replace('/home/'+state.user,'~') : p;
+    const setTitle = ()=> titleEl.textContent = `Terminal — ${state.user}@${state.host}: ${displayPath(state.cwd)}`;
+
+    const norm = (p)=>{ if(!p) return state.cwd; if(p.startsWith('~')) p=p.replace(/^~/,'/home/'+state.user);
+      const a=(p.startsWith('/')?p:state.cwd+'/'+p).split('/'); const out=[];
+      for(const seg of a){ if(!seg||seg==='.') continue; if(seg==='..') out.pop(); else out.push(seg); }
+      return '/'+out.join('/'); };
+    const getNode = (p)=>{ p=norm(p); if(p==='/'||p==='') return {node:state.fs,parent:null,name:'/'};
+      const parts=p.split('/').slice(1); let cur=state.fs,parent=null,name='/';
+      for(const q of parts){ parent=cur; name=q; if(!cur.children||!cur.children[q]) return {node:null,parent,name:q}; cur=cur.children[q]; }
+      return {node:cur,parent,name}; };
+    const ensureParents = (p)=>{ const full=norm(p); const parts=full.split('/').slice(1); let cur=state.fs;
+      for(let i=0;i<parts.length-1;i++){ const seg=parts[i];
+        if(!cur.children[seg]) cur.children[seg]={type:'dir',name:seg,perms:'rwxr-xr-x',owner:state.user,group:state.user,mtime:Date.now(),children:{}};
+        cur=cur.children[seg]; if(cur.type!=='dir') return null; }
+      return {dir:cur, leaf:parts[parts.length-1]}; };
+
+    // ---------- Render / prompt ----------
+    const print = (text, cls='')=>{
+      if(text==='') return;
+      const el=document.createElement('div'); el.className='line';
+      el.innerHTML=`<span class="${cls}">${escapeHTML(text)}</span>`;
+      term.appendChild(el); term.scrollTop=term.scrollHeight;
+    };
+    const printRaw = (html)=>{
+      const el=document.createElement('div'); el.className='line';
+      el.innerHTML=html; term.appendChild(el); term.scrollTop=term.scrollHeight;
+    };
+
+    function newPrompt(){
+      const a=document.createElement('div'); a.className='line ps1a';
+      a.innerHTML=`┌──(<span class="user">${state.user}</span>㉿<span class="host">${state.host}</span>)-[<span class="cwd">${escapeHTML(displayPath(state.cwd))}</span>]`;
+      term.appendChild(a);
+      const b=document.createElement('div'); b.className='line ps1b';
+      b.innerHTML=`<span class="arrow">└─$</span> <span id="cmdline" class="input" contenteditable="true" spellcheck="false" aria-label="Command line"></span>`;
+      term.appendChild(b);
+      state.inputEl=b.querySelector('#cmdline');
+      state.inputEl.focus(); placeCaretEnd(state.inputEl);
+      state.inputEl.addEventListener('keydown', onKey);
+      state.inputEl.addEventListener('paste', e=>{
+        e.preventDefault(); const t=(e.clipboardData||window.clipboardData).getData('text/plain');
+        document.execCommand('insertText', false, t);
+      });
+      setTitle();
+    }
+    const placeCaretEnd=(el)=>{
+      const r=document.createRange(); r.selectNodeContents(el); r.collapse(false);
+      const s=window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    };
+    const getInput=()=> (state.inputEl?.textContent||'').trim();
+    const setInput=(v)=>{ if(!state.inputEl) return; state.inputEl.textContent=v; placeCaretEnd(state.inputEl); };
+
+    // ---------- Parsing / history / autocomplete ----------
+    const pushHistory = (c)=>{ if(!c) return; const last=state.history[state.history.length-1]; if(last!==c) state.history.push(c); state.histIdx=state.history.length; };
+    function tokenize(str){
+      const out=[]; let cur='', quote=null;
+      for(let i=0;i<str.length;i++){
+        const ch=str[i];
+        if(quote){
+          if(ch===quote) quote=null;
+          else if(ch==='\\' && quote==='\"' && i+1<str.length){ cur+=str[++i]; }
+          else cur+=ch;
+        } else {
+          if(ch==='\"' || ch==="'") quote=ch;
+          else if(/\s/.test(ch)){ if(cur!==''){ out.push({raw:cur}); cur=''; } }
+          else if(ch==='>' && str[i+1]==='>'){ if(cur!==''){out.push({raw:cur}); cur='';} out.push({raw:'>>'}); i++; }
+          else if(ch==='>'){ if(cur!==''){out.push({raw:cur}); cur='';} out.push({raw:'>'}); }
+          else cur+=ch;
+        }
+      }
+      if(cur!=='') out.push({raw:cur});
+      return out;
+    }
+    const splitPath=(p)=>{
+      if(!p) return {dir:'',base:''};
+      p=p.replace(/^~(?=\/|$)/,'/home/'+state.user);
+      const i=p.lastIndexOf('/'); if(i===-1) return {dir:'',base:p};
+      return {dir:p.slice(0,i)||'/', base:p.slice(i+1)};
+    };
+    function autocomplete(){
+      const val=getInput(); const caret=window.getSelection().anchorOffset; const left=val.slice(0,caret);
+      const t=tokenize(left); const last=t.length?t[t.length-1].raw:''; const before=t.slice(0,-1).map(x=>x.raw).join(' ');
+      const comps=[];
+      const cmds=Object.keys(COMMANDS);
+      if(t.length<=1){ for(const c of cmds){ if(c.startsWith(last)) comps.push(c); } }
+      const {base,dir}=splitPath(last);
+      const target=getNode(dir||'.').node;
+      if(target?.type==='dir'){
+        for(const n in target.children){ if(n.startsWith(base)) comps.push((dir?dir+'/':'')+n); }
+      }
+      if(comps.length===1) setInput((before?before+' ':'')+comps[0]);
+      else if(comps.length>1) print(comps.join('  '));
+    }
+    function parseRedir(tokens){
+      let outfile=null, append=false;
+      if(tokens.length>=2){
+        const last=tokens[tokens.length-2]?.raw; const f=tokens[tokens.length-1]?.raw;
+        if(last==='>'||last==='>>'){ append=(last==='>>'); outfile=f; tokens.splice(tokens.length-2,2); }
+      }
+      return {args:tokens.map(t=>t.raw), outfile, append};
+    }
+
+    // ---------- Commands ----------
+    const COMMANDS={};
+    const cmd=(name,fn,man)=>COMMANDS[name]={run:fn,man};
+    const manpage=(n)=>COMMANDS[n]?.man||`No manual entry for ${n}`;
+    const lsFormatLong=(n,node)=>{
+      const type=node.type==='dir'?'d':'-';
+      const perms=node.perms||(node.type==='dir'?'rwxr-xr-x':'rw-r--r--');
+      const size=node.type==='dir'?Object.keys(node.children||{}).length:(node.size??(node.content?.length||0));
+      const when=new Date(node.mtime||Date.now()).toISOString().slice(0,16).replace('T',' ');
+      return `${type}${perms} ${node.owner||state.user} ${node.group||state.user} ${String(size).padStart(6,' ')} ${when} ${n}`;
+    };
+
+    cmd('help',()=>[
+      'Available commands:',
+      '  help                      Show this help',
+      '  clear                     Clear the screen',
+      '  pwd                       Print working directory',
+      '  ls [-l] [-a] [path]       List directory contents',
+      '  cd [path]                 Change directory',
+      '  cat <file>                Print file',
+      '  echo [text] [>file]       Print text (supports > and >>)',
+      '  touch <file>              Create/refresh a file',
+      '  mkdir [-p] <dir>          Create directory',
+      '  rm [-r] <path>            Remove file/dir',
+      '  mv <src> <dest>           Move/rename',
+      '  cp [-r] <src> <dest>      Copy files/dirs',
+      '  grep [-rni] <pat> <path>  Search files',
+      '  find <path> -name <pat>   Find files by name',
+      '  whoami                    Show current user',
+      '  uname [-a]                Kernel/system info',
+      '  date                      Show current date',
+      '  cal [YYYY MM]             Monthly calendar',
+      '  ifconfig | ip a           Network interfaces (sim.)',
+      '  ping [-c N] <host>        Ping host (sim.)',
+      '  nmap <host>               Port scan (sim.)',
+      '  ps                        Process list (sim.)',
+      '  top                       Process snapshot (sim.)',
+      '  history                   Show command history',
+      '  man <cmd>                 Mini manpages',
+      '  apt update|install <pkg>  Apt (simulated)',
+      '  df, du, head, tail, wc    Disk & file utils',
+      '  tree, basename, dirname   Path helpers',
+      '  env, export, printenv     Environment',
+      '  hostname, id, groups, uptime  System info'
+    ].join('\n'));
+
+    cmd('clear',()=>{ term.innerHTML=''; return ''; });
+    cmd('pwd',()=>displayPath(state.cwd));
+
+    cmd('ls',(argv)=>{
+      const flags=new Set(argv.filter(a=>a.startsWith('-')).join('').slice(1).split(''));
+      const pathArg=argv.find(a=>!a.startsWith('-'))||'.';
+      const {node}=getNode(pathArg);
+      if(!node) return `ls: cannot access '${pathArg}': No such file or directory`;
+      if(node.type==='file') return flags.has('l')?lsFormatLong(pathArg.split('/').pop(),node):pathArg.split('/').pop();
+      const names=Object.keys(node.children||{}).filter(n=>flags.has('a')||!n.startsWith('.')).sort();
+      if(flags.has('l')) return names.map(n=>lsFormatLong(n,node.children[n])).join('\n');
+      return names.join('  ');
+    });
+
+    cmd('cd',(argv)=>{
+      const p=argv[0]||('/home/'+state.user);
+      const {node}=getNode(p);
+      if(!node) return `cd: no such file or directory: ${p}`;
+      if(node.type!=='dir') return `cd: not a directory: ${p}`;
+      state.cwd=norm(p); setTitle(); state.env.PWD=state.cwd; return '';
+    });
+
+    cmd('cat',(argv)=>{
+      if(!argv.length) return 'cat: missing operand';
+      const out=[];
+      for(const p of argv){
+        const {node}=getNode(p);
+        if(!node) out.push(`cat: ${p}: No such file or directory`);
+        else if(node.type!=='file') out.push(`cat: ${p}: Is a directory`);
+        else out.push(node.content);
+      }
+      return out.join('\n');
+    });
+
+    cmd('echo',(argv)=> argv.join(' '));
+
+    cmd('touch',(argv)=>{
+      if(!argv.length) return 'touch: missing file operand';
+      const out=[];
+      for(const p of argv){
+        const trg=ensureParents(p);
+        if(!trg){ out.push(`touch: cannot touch '${p}': No such file or directory`); continue; }
+        const {dir,leaf}=trg;
+        if(!dir.children[leaf]) dir.children[leaf]=file('');
+        dir.children[leaf].mtime=Date.now();
+        dir.children[leaf].size=dir.children[leaf].content.length;
+        out.push('');
+      }
+      saveFS(); return out.join('\n');
+    });
+
+    cmd('mkdir',(argv)=>{
+      if(!argv.length) return 'mkdir: missing operand';
+      const pflag=argv.includes('-p'); const targets=argv.filter(a=>!a.startsWith('-')); const out=[];
+      for(const p of targets){
+        const trg=ensureParents(p);
+        if(!trg){
+          if(pflag){ ensureParents(p+'/..'); }
+          else { out.push(`mkdir: cannot create directory '${p}': No such file or directory`); continue; }
+        }
+        const {dir,leaf}=ensureParents(p);
+        if(dir.children[leaf]){ out.push(`mkdir: cannot create directory '${p}': File exists`); continue; }
+        dir.children[leaf]={type:'dir',name:leaf,perms:'rwxr-xr-x',owner:state.user,group:state.user,mtime:Date.now(),children:{}};
+        out.push('');
+      }
+      saveFS(); return out.join('\n');
+    });
+
+    cmd('rm',(argv)=>{
+      if(!argv.length) return 'rm: missing operand';
+      const r=argv.includes('-r')||argv.includes('-rf')||argv.includes('-fr');
+      const targets=argv.filter(a=>!a.startsWith('-')); const out=[];
+      for(const p of targets){
+        const {node,parent,name}=getNode(p);
+        if(!node){ out.push(`rm: cannot remove '${p}': No such file or directory`); continue; }
+        if(node.type==='dir'&&!r){ out.push(`rm: cannot remove '${p}': Is a directory`); continue; }
+        delete parent.children[name]; out.push('');
+      }
+      saveFS(); return out.join('\n');
+    });
+
+    const cloneNode=(n)=>JSON.parse(JSON.stringify(n));
+    cmd('mv',(argv)=>{
+      if(argv.length<2) return 'mv: missing file operand';
+      const src=getNode(argv[0]); if(!src.node) return `mv: cannot stat '${argv[0]}': No such file or directory`;
+      const dstPath=norm(argv[1]); const dst=getNode(dstPath);
+      if(dst.node&&dst.node.type==='dir'){
+        dst.node.children[src.name]=src.node; delete src.parent.children[src.name];
+      } else {
+        const trg=ensureParents(dstPath); if(!trg) return `mv: cannot move to '${argv[1]}': No such directory`;
+        const {dir,leaf}=trg; dir.children[leaf]=src.node; delete src.parent.children[src.name];
+      }
+      saveFS(); return '';
+    });
+
+    cmd('cp',(argv)=>{
+      if(argv.length<2) return 'cp: missing file operand';
+      const r=argv.includes('-r')||argv.includes('-R'); const args=argv.filter(a=>!a.startsWith('-'));
+      const src=getNode(args[0]); if(!src.node) return `cp: cannot stat '${args[0]}': No such file or directory`;
+      if(src.node.type==='dir'&&!r) return `cp: -r not specified; omitting directory '${args[0]}'`;
+      const dstPath=norm(args[1]); const trg=ensureParents(dstPath); if(!trg) return `cp: cannot copy to '${args[1]}': No such directory`;
+      const {dir,leaf}=trg; dir.children[leaf]=cloneNode(src.node); dir.children[leaf].name=leaf; saveFS(); return '';
+    });
+
+    // grep with -r, -n, -i
+    cmd('grep',(argv)=>{
+      const flags=new Set(argv.filter(a=>a.startsWith('-')).join('').slice(1).split(''));
+      const args=argv.filter(a=>!a.startsWith('-'));
+      if(args.length<2) return 'grep: usage: grep [-rni] PATTERN FILE|DIR';
+      const pat=args[0]; const target=getNode(args[1]).node;
+      if(!target) return `grep: ${args[1]}: No such file or directory`;
+      const rx=new RegExp(pat, flags.has('i')?'i':''); const out=[];
+      function searchFile(path,node){
+        const lines=node.content.split(/\r?\n/);
+        for(let i=0;i<lines.length;i++){
+          if(rx.test(lines[i])) out.push((flags.has('n')?path+':'+(i+1)+':':path+':')+lines[i]);
+        }
+      }
+      function walk(path,node){
+        if(node.type==='file') return searchFile(path,node);
+        for(const n in node.children) walk(path+(path==='/'?'':'/')+n,node.children[n]);
+      }
+      if(target.type==='dir'){ if(flags.has('r')) walk(norm(args[1]), target); else return `grep: ${args[1]}: Is a directory`; }
+      else searchFile(norm(args[1]), target);
+      return out.join('\n');
+    });
+
+    const wildcardToRegExp=(pat)=>{ const esc=pat.replace(/[.+^${}()|[\]\\]/g,'\\$&'); return new RegExp('^'+esc.replace(/\*/g,'.*').replace(/\?/g,'.')+'$'); };
+    cmd('find',(argv)=>{
+      if(argv.length<3||argv[1]!=='-name') return 'find: usage: find <path> -name <pattern>';
+      const start=getNode(argv[0]).node; if(!start) return `find: ${argv[0]}: No such file or directory`;
+      const pat=wildcardToRegExp(argv[2]); const out=[];
+      (function walk(path,node){
+        if(node!==start&&pat.test(path.split('/').pop())) out.push(path);
+        if(node.type==='dir') for(const n in node.children) walk(path+(path==='/'?'':'/')+n,node.children[n]);
+      })(norm(argv[0]), start);
+      return out.join('\n');
+    });
+
+    cmd('whoami',()=>state.user);
+    cmd('uname',(argv)=> argv.includes('-a')?'Linux kali 6.9.0-amd64 #1 SMP PREEMPT x86_64 GNU/Linux':'Linux');
+    cmd('date',()=>now().toString());
+
+    cmd('cal',(argv)=>{
+      let y=argv[0]?+argv[0]:now().getFullYear(), m=argv[1]?+argv[1]-1:now().getMonth();
+      if(Number.isNaN(y)||Number.isNaN(m)){y=now().getFullYear();m=now().getMonth();}
+      const f=new Date(y,m,1), l=new Date(y,m+1,0), days=['Su','Mo','Tu','We','Th','Fr','Sa'];
+      let out=`    ${f.toLocaleString('default',{month:'long'})} ${y}\n${days.join(' ')}`, col=f.getDay();
+      out+='\n'+'   '.repeat(col);
+      for(let d=1;d<=l.getDate();d++){ out+=String(d).padStart(2,' ')+' '; if(++col%7===0) out+='\n'; }
+      return out.trimEnd();
+    });
+
+    // --- Simulated networking ---
+    function initNet(){
+      const saved=localStorage.getItem('kali_net_v1'); if(saved) return JSON.parse(saved);
+      const randHex=n=>Array.from({length:n},()=>Math.floor(Math.random()*16).toString(16)).join('');
+      const mac=()=>Array.from({length:6},()=>randHex(2)).join(':');
+      const ip =()=>`192.168.${Math.floor(Math.random()*20)+10}.${Math.floor(Math.random()*200)+2}`;
+      const net={lo:{name:'lo',inet:'127.0.0.1',mask:'255.0.0.0',mac:'00:00:00:00:00:00'},
+                 eth0:{name:'eth0',inet:ip(),mask:'255.255.255.0',mac:mac()},
+                 wlan0:{name:'wlan0',inet:ip(),mask:'255.255.255.0',mac:mac()}};
+      localStorage.setItem('kali_net_v1', JSON.stringify(net)); return net;
+    }
+    const fmtIfconfig = it => `${it.name}: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500\n\tinet ${it.inet} netmask ${it.mask}\n\tether ${it.mac}`;
+    cmd('ifconfig',()=> Object.values(state.net).map(fmtIfconfig).join('\n\n'));
+    cmd('ip',(argv)=>{ if(argv[0]==='a'||argv[0]==='addr'){ const out=[]; let i=1; for(const it of Object.values(state.net)){ out.push(`${i}: ${it.name}: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500`); out.push(`    inet ${it.inet}/24`); out.push(`    link/ether ${it.mac}`); i++; } return out.join('\n'); } return 'ip: usage: ip a'; });
+
+    cmd('ping',async (argv)=>{
+      const i=argv.indexOf('-c'); const n=(i!==-1&&argv[i+1])?Math.max(1,Math.min(10,parseInt(argv[i+1],10)||4)):4;
+      const host=argv.find(a=>!a.startsWith('-')&&a!==String(n))||'127.0.0.1';
+      const lines=[`PING ${host} (${host}) 56(84) bytes of data.`];
+      for(let k=0;k<n;k++){ const t=(Math.random()*20+10).toFixed(1); lines.push(`64 bytes from ${host}: icmp_seq=${k+1} ttl=64 time=${t} ms`); }
+      lines.push(`\n--- ${host} ping statistics ---`);
+      lines.push(`${n} packets transmitted, ${n} received, 0% packet loss`);
+      lines.push(`rtt min/avg/max = 10.0/${(15+Math.random()*5).toFixed(1)}/30.0 ms`);
+      return lines.join('\n');
+    });
+
+    cmd('nmap',(argv)=>{
+      const target=argv[0]||'127.0.0.1', ports=[22,80,443,3306], svc={22:'ssh',80:'http',443:'https',3306:'mysql'};
+      const out=[`Starting Nmap 7.94 at ${fmtTime(now())}`,`Nmap scan report for ${target}`,'PORT     STATE SERVICE'];
+      for(const p of ports){ if(Math.random()<0.8) out.push(String(p).padEnd(9,' ')+'open  '+(svc[p]||'unknown')); }
+      out.push('\nNmap done: 1 IP address (1 host up) scanned in 0.11 seconds');
+      return out.join('\n');
+    });
+
+    cmd('ps',()=>{
+      const procs=[{pid:1,tty:'?',time:'00:00:01',cmd:'init'},{pid:1337,tty:'pts/0',time:'00:00:00',cmd:'bash'},{pid:2042,tty:'?',time:'00:00:00',cmd:'ssh-agent'},{pid:3001,tty:'pts/0',time:'00:00:00',cmd:'node server.js'}];
+      const head=' PID TTY      TIME     CMD', rows=procs.map(p=>`${String(p.pid).padStart(4,' ')} ${String(p.tty).padEnd(8,' ')} ${p.time.padEnd(8,' ')} ${p.cmd}`);
+      return [head,...rows].join('\n');
+    });
+
+    cmd('top',()=>{
+      const header='top - 00:00:00 up 1 day,  1 user,  load average: 0.10, 0.15, 0.12\nTasks:  87 total,   1 running,  86 sleeping,   0 stopped,   0 zombie\n%Cpu(s):  3.0 us,  1.0 sy,  0.0 ni, 95.0 id,  1.0 wa,  0.0 hi,  0.0 si,  0.0 st\nMiB Mem :  15900.0 total,  12000.0 free,   1200.0 used,   2700.0 buff/cache\n';
+      const procs=[{pid:3001,user:state.user,pr:'20',ni:'0',virt:'1200m',res:'90m',shr:'20m',s:'S',cpu:'1.3',mem:'0.6',time:'00:00:03',cmd:'node'},{pid:1337,user:state.user,pr:'20',ni:'0',virt:'15m',res:'3m',shr:'1m',s:'S',cpu:'0.1',mem:'0.0',time:'00:00:00',cmd:'bash'}];
+      const head2='  PID USER      PR  NI    VIRT    RES    SHR S  %CPU %MEM     TIME+ COMMAND';
+      const rows=procs.map(p=>`${String(p.pid).padStart(5)} ${p.user.padEnd(9)} ${p.pr.padStart(2)} ${p.ni.padStart(2)} ${p.virt.padStart(7)} ${p.res.padStart(6)} ${p.shr.padStart(6)} ${p.s.padStart(1)} ${p.cpu.padStart(5)} ${p.mem.padStart(4)} ${p.time.padStart(10)} ${p.cmd}`);
+      return header+head2+'\n'+rows.join('\n');
+    });
+
+    cmd('history',()=> state.history.map((c,i)=>`${i+1}  ${c}`).join('\n'));
+    cmd('man',(argv)=> argv.length?manpage(argv[0]):'What manual page do you want?');
+
+    cmd('apt',(argv)=>{
+      const a=argv[0];
+      if(a==='update') return 'Hit:1 http://kali.org stable InRelease\nReading package lists... Done\nBuilding dependency tree... Done\nAll packages are up to date (simulated).';
+      if(a==='install'){
+        const pkg=argv[1]; if(!pkg) return 'apt: missing package name';
+        return `Reading package lists... Done\nBuilding dependency tree... Done\nThe following NEW packages will be installed:\n  ${pkg}\n0 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.\nAfter this operation, 1 MB of additional disk space will be used.\nSelecting previously unselected package ${pkg}.\nSetting up ${pkg} (1.0-1) ... (simulated)`;
+      }
+      return 'apt: supported: update | install <pkg> (simulated)';
+    });
+
+    // ---------- Extras ----------
+    function sumSizes(node){ if(node.type==='file') return node.content.length; let s=0; for(const k in node.children){ s+=sumSizes(node.children[k]); } return s; }
+    function wordCount(t){ let c=0, w=false; for(let i=0;i<t.length;i++){ const ch=t[i]; if(ch.trim()){ if(!w){c++; w=true;} } else { w=false; } } return c; }
+
+    cmd('df',()=>{
+      const total=100*1024*1024; const used=sumSizes(state.fs); const avail=total-used; const pct=Math.min(99,Math.round(used/total*100));
+      return 'Filesystem     Size  Used Avail Use% Mounted on\n' +
+             'browserfs      100M  '+String(Math.round(used/1024/1024))+'M  '+String(Math.round(avail/1024/1024))+'M  '+pct+'% /';
+    });
+    cmd('du',(argv)=>{ const p=argv[0]||'.'; const {node}=getNode(p); if(!node) return `du: cannot access '${p}': No such file or directory`; const sz=sumSizes(node); return String(Math.round(sz/1024))+'K\t'+norm(p); });
+    function fileAndN(argv){ let n=10, idx=argv.indexOf('-n'); if(idx!==-1&&argv[idx+1]){ const v=parseInt(argv[idx+1],10); if(!isNaN(v)) n=v; argv=argv.filter((_,i)=>i!==idx&&i!==idx+1);} return {path:argv[0], n}; }
+    cmd('head',(argv)=>{ const {path,n}=fileAndN(argv); if(!path) return 'head: missing file operand'; const {node}=getNode(path); if(!node) return `head: cannot open '${path}'`; if(node.type!=='file') return `head: error reading '${path}': Is a directory`; return node.content.split('\n').slice(0,n).join('\n'); });
+    cmd('tail',(argv)=>{ const {path,n}=fileAndN(argv); if(!path) return 'tail: missing file operand'; const {node}=getNode(path); if(!node) return `tail: cannot open '${path}'`; if(node.type!=='file') return `tail: error reading '${path}': Is a directory`; const lines=node.content.split('\n'); return lines.slice(Math.max(0,lines.length-n)).join('\n'); });
+    cmd('wc',(argv)=>{ if(!argv[0]) return 'wc: missing file operand'; const {node}=getNode(argv[0]); if(!node) return `wc: ${argv[0]}: No such file or directory`; if(node.type!=='file') return `wc: ${argv[0]}: Is a directory`; const txt=node.content; const l=(txt.match(/\n/g)||[]).length; const w=wordCount(txt); const c=txt.length; return `${l} ${w} ${c} ${argv[0]}`; });
+    cmd('chmod',(argv)=>{ if(argv.length<2) return 'chmod: missing operand'; const mode=argv[0]; const {node}=getNode(argv[1]); if(!node) return `chmod: cannot access '${argv[1]}'`; node.perms=mode; node.mtime=Date.now(); saveFS(); return ''; });
+
+    cmd('hostname',()=>state.host);
+    cmd('id',()=>`uid=1000(${state.user}) gid=1000(${state.user}) groups=1000(${state.user})`);
+    cmd('groups',()=>`${state.user}`);
+    cmd('uptime',()=>{ const secs=Math.floor((Date.now()-bootStarted)/1000); const h=Math.floor(secs/3600), m=Math.floor((secs%3600)/60); const la=[0.10,0.15,0.12].map(n=>n.toFixed(2)).join(', '); return ` ${new Date().toLocaleTimeString()} up ${h} hour${h!==1?'s':''}, ${m} min,  1 user,  load average: ${la}`; });
+    cmd('basename',(argv)=>{ if(!argv[0]) return ''; return argv[0].replace(/\/$/,'').split('/').pop(); });
+    cmd('dirname',(argv)=>{ if(!argv[0]) return '.'; const i=argv[0].lastIndexOf('/'); return i<=0?'/':argv[0].slice(0,i)||'/'; });
+    cmd('tree',(argv)=>{ const start=argv[0]||'.'; const {node}=getNode(start); if(!node) return `tree: ${start}: No such file or directory`; const showHidden=argv.includes('-a'); const lines=[]; function walk(n,pre){ if(n.type==='dir'){ const keys=Object.keys(n.children).filter(k=>showHidden||!k.startsWith('.')); keys.forEach((k,idx)=>{ const last=idx===keys.length-1; lines.push(pre+(last?'└── ':'├── ')+k); walk(n.children[k], pre+(last?'    ':'│   ')); }); } } lines.push(start); walk(node,''); return lines.join('\n'); });
+    cmd('env',()=> Object.entries(state.env).map(([k,v])=>`${k}=${v}`).join('\n'));
+    cmd('printenv',(argv)=> argv[0]? (state.env[argv[0]]||'') : Object.entries(state.env).map(([k,v])=>`${k}=${v}`).join('\n'));
+    cmd('export',(argv)=>{ if(argv.length===0) return Object.entries(state.env).map(([k,v])=>`declare -x ${k}="${v}"`).join('\n'); for(const pair of argv){ const i=pair.indexOf('='); if(i===-1) continue; const k=pair.slice(0,i); const v=pair.slice(i+1); state.env[k]=v; } return ''; });
+    cmd('which',(argv)=>{ if(!argv[0]) return ''; const name=argv[0]; if(COMMANDS[name]) return '/bin/'+name; return `${name} not found`; });
+
+    // ---------- Runner ----------
+    async function execute(line){
+      const tokens=tokenize(line); if(tokens.length===0) return '';
+      const {args,outfile,append}=parseRedir(tokens); let [name,...argv]=args;
+      if(name==='sudo'){ if(!argv.length) return 'usage: sudo <command>'; name=argv.shift(); }
+      const c=COMMANDS[name]; if(!c) return `${name}: command not found`;
+      let result=await c.run(argv); if(typeof result!=='string') result=String(result??'');
+      if(outfile){
+        const trg=ensureParents(outfile); if(!trg) return `bash: ${outfile}: No such file or directory`;
+        const {dir,leaf}=trg; if(!dir.children[leaf]) dir.children[leaf]=file('');
+        dir.children[leaf].content = append ? (dir.children[leaf].content + (result? result+'\n':'')) : (result + '\n');
+        dir.children[leaf].mtime=Date.now(); dir.children[leaf].size=dir.children[leaf].content.length; saveFS(); return '';
+      }
+      return result;
+    }
+
+    async function onKey(e){
+      if(e.key==='Enter'){
+        e.preventDefault();
+        const line=getInput();
+        state.inputEl.removeAttribute('contenteditable');
+        state.inputEl.classList.remove('input');
+        pushHistory(line);
+        try{ const out=await execute(line); if(out) print(out); }
+        catch(err){ print('error: '+(err?.message||String(err)),'muted'); }
+        newPrompt();
+      } else if(e.key==='Tab'){
+        e.preventDefault(); autocomplete();
+      } else if(e.key==='l' && e.ctrlKey){
+        e.preventDefault(); COMMANDS.clear.run(); newPrompt();
+      } else if(e.shiftKey && e.key==='ArrowUp'){
+        if(state.histIdx>0){ state.histIdx--; setInput(state.history[state.histIdx]||''); }
+      } else if(e.shiftKey && e.key==='ArrowDown'){
+        if(state.histIdx<state.history.length){ state.histIdx++; setInput(state.history[state.histIdx]||''); }
+      }
+    }
+
+    function boot(){
+      state.fs = loadFS() || defaultFS();
+      state.net = (function(){ try{return JSON.parse(localStorage.getItem('kali_net_v1'))||initNet();}catch(_){return initNet();} })();
+      state.cwd = '/home/'+state.user;
+      setTitle();
+      // Only the clean MOTD:
+      const motd = getNode('/etc/motd').node?.content || '';
+      if(motd) print(motd);
+      newPrompt();
+      term.addEventListener('mousedown',()=>{ if(state.inputEl) state.inputEl.focus(); });
+    }
+
+    boot();
+  })();
+  </script>
+</body>
+</html>
