@@ -33,8 +33,9 @@
     .line{white-space:pre-wrap;word-break:break-word; line-height:1.6}
     .muted{color:var(--muted)}
 
-    /* Prompt colors + spacing between command blocks */
+    /* Spacing only before each new prompt (not under input) */
     .ps1a{color:var(--muted); margin-top:16px}
+    .ps1a.first{margin-top:0}     /* no gap if it’s the first thing */
     .ps1a .user{color:var(--green)}
     .ps1a .host{color:var(--blue)}
     .ps1a .cwd{color:#9bb4ff}
@@ -68,10 +69,12 @@
   </div>
 
   <script>
+  // Kali-like terminal SPA (single file)
   (()=> {
     const term = document.getElementById('term');
     const titleEl = document.getElementById('title');
 
+    // Allow overrides via URL: ?user=&host=
     const url = new URL(location.href);
     const user = url.searchParams.get('user') || 'kali';
     const host = url.searchParams.get('host') || 'kali';
@@ -106,7 +109,7 @@ Useful commands:
   cat, echo, touch          Read/write files (supports > and >>)
   mkdir, rm, mv, cp         Manage files and folders
   grep, find                Search content / names
-  whoami, uname -a          System info
+  whoami, uname - a         System info
   date, cal                 Time utilities
   ifconfig, ip a            Network info (simulated)
   ping, nmap                Network tools (simulated)
@@ -160,12 +163,16 @@ Useful commands:
     };
 
     function newPrompt(){
-      const a=document.createElement('div'); a.className='line ps1a';
+      const a=document.createElement('div');
+      const isFirst = term.childElementCount === 0;  // empty terminal → first prompt
+      a.className='line ps1a' + (isFirst ? ' first' : '');
       a.innerHTML=`┌──(<span class="user">${state.user}</span>㉿<span class="host">${state.host}</span>)-[<span class="cwd">${escapeHTML(displayPath(state.cwd))}</span>]`;
       term.appendChild(a);
+
       const b=document.createElement('div'); b.className='line ps1b';
       b.innerHTML=`<span class="arrow">└─$</span> <span id="cmdline" class="input" contenteditable="true" spellcheck="false" aria-label="Command line"></span>`;
       term.appendChild(b);
+
       state.inputEl=b.querySelector('#cmdline');
       state.inputEl.focus(); placeCaretEnd(state.inputEl);
       state.inputEl.addEventListener('keydown', onKey);
@@ -562,9 +569,9 @@ Useful commands:
       state.net = (function(){ try{return JSON.parse(localStorage.getItem('kali_net_v1'))||initNet();}catch(_){return initNet();} })();
       state.cwd = '/home/'+state.user;
       setTitle();
-      // Only the clean MOTD:
+      // Print MOTD if present, then prompt (spacing will appear before first prompt)
       const motd = getNode('/etc/motd').node?.content || '';
-      if(motd) print(motd);
+      if(motd.trim()) print(motd);
       newPrompt();
       term.addEventListener('mousedown',()=>{ if(state.inputEl) state.inputEl.focus(); });
     }
